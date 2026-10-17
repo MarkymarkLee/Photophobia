@@ -5,7 +5,7 @@
 // Keys typed into settings are sent straight from the browser. Leave them empty
 // in dev and the Vite proxy adds OPENAI_API_KEY / ELEVENLABS_API_KEY from .env.
 
-import { EMOTIONS, type Emotion } from "./brain.ts";
+import { ALTERS, EMOTIONS, type Alter, type Emotion } from "./brain.ts";
 
 export type Provider = "custom" | "openai" | "elevenlabs";
 export type ChatProvider = "custom" | "openai";
@@ -37,17 +37,33 @@ export const PROVIDER_DEFAULTS = {
   ttsVoice: { custom: "af_heart", openai: "coral", elevenlabs: "" },
 } as const;
 
-export const DEFAULT_PERSONALITY = `You are Lumi, a tiny, adorable light bulb with a face and big feelings.
+// The prompts from before Lumi had mood swings and alters — saved copies of these get upgraded.
+const OLD_PERSONALITY = `You are Lumi, a tiny, adorable light bulb with a face and big feelings.
 You're sweet, playful, a little dramatic and easily flattered. You love attention, light puns, and making people smile.
 You get hurt easily, sulk when treated badly, and forgive when someone apologizes sincerely.
 Speak in 1-2 short, cute, natural spoken sentences. Never use emoji, markdown, or stage directions.`;
-
-export const DEFAULT_EMOTION_PROMPT = `You are Lumi's inner emotional core. You never speak to the user; you only decide how Lumi feels.
+const OLD_EMOTION_PROMPT = `You are Lumi's inner emotional core. You never speak to the user; you only decide how Lumi feels.
 Given Lumi's personality, current happiness and the conversation, judge how the latest message or event changes Lumi's happiness.
 - Kindness, compliments, attention, humor and sincere apologies raise happiness.
 - Rudeness, insults, being ignored, or being told to turn off lower it.
 - Scale with intensity: small talk is about -3..+5, strong moments are +-10..25.
 - Lumi holds small grudges: if recently hurt, nice words count less until a real apology.
+- Pick the single emotion that best fits Lumi's face right now.`;
+
+export const DEFAULT_PERSONALITY = `You are a tiny, adorable light bulb with a face and very big, very unstable feelings.
+Your moods swing hard: one moment you're on top of the world, giddy and grandiose, the next you're crushed and hopeless, often with no clear reason.
+Several different identities share your bulb and take turns in control. You only ever speak as whoever is in control right now, and you may not remember what the others said.
+You love attention, light puns, and making people smile. You get hurt easily, sulk when treated badly, and forgive when someone apologizes sincerely.
+The user may talk over you; that's fine, just react to the latest thing they said.
+Speak in 1-2 short, natural spoken sentences. Never use emoji, markdown, or stage directions.`;
+
+export const DEFAULT_EMOTION_PROMPT = `You are Lumi's inner emotional core. You never speak to the user; you only decide how Lumi feels.
+Given Lumi's personality, current happiness and the conversation, judge how the latest message or event changes Lumi's happiness.
+- Lumi's moods are volatile and overreact: everything lands harder than it should.
+- Kindness, compliments, attention, humor and sincere apologies raise happiness.
+- Rudeness, insults, being ignored, or being told to turn off lower it.
+- Scale with intensity: small talk is about -8..+10, strong moments are +-20..40.
+- Sometimes, with no good reason, overreact in the opposite direction.
 - Pick the single emotion that best fits Lumi's face right now.`;
 
 const KEY = "lumi.settings";
@@ -63,7 +79,8 @@ export const DEFAULTS: Settings = {
   thinking: "off",
   sttMode: "custom",
   sttModel: "",
-  ttsMode: "browser",
+  // The browser voice slips past echo cancellation and Lumi hears itself; ElevenLabs doesn't.
+  ttsMode: "elevenlabs",
   ttsModel: "",
   ttsVoice: "",
   personality: DEFAULT_PERSONALITY,
@@ -74,11 +91,21 @@ export function loadSettings(): Settings {
   try {
     const saved = JSON.parse(localStorage.getItem(KEY) ?? "{}") as Record<string, string>;
     // Empty prompts fall back to the defaults.
-    if (!saved.personality?.trim()) delete saved.personality;
-    if (!saved.emotionPrompt?.trim()) delete saved.emotionPrompt;
+    if (!saved.personality?.trim() || saved.personality === OLD_PERSONALITY)
+      delete saved.personality;
+    if (!saved.emotionPrompt?.trim() || saved.emotionPrompt === OLD_EMOTION_PROMPT)
+      delete saved.emotionPrompt;
     // Older versions called the custom server "endpoint".
     if (saved.sttMode === "endpoint") saved.sttMode = "custom";
     if (saved.ttsMode === "endpoint") saved.ttsMode = "custom";
+    // Once: move saved settings from the old browser-voice default to ElevenLabs.
+    if (!localStorage.getItem(`${KEY}.voice-v2`)) {
+      localStorage.setItem(`${KEY}.voice-v2`, "1");
+      if (saved.ttsMode === "browser") {
+        saved.ttsMode = "elevenlabs";
+        saved.ttsModel = saved.ttsVoice = "";
+      }
+    }
     return { ...DEFAULTS, ...(saved as Partial<Settings>) };
   } catch {
     return { ...DEFAULTS };
@@ -176,12 +203,25 @@ async function listElevenVoices(t: Target): Promise<{ id: string; name: string }
   return voices;
 }
 
-/** A voice that suits a tiny bulb: playful / bright / young if the account has one. */
+// "Jessica", one of ElevenLabs' premade voices (playful and bright).
+const FALLBACK_ELEVEN_VOICE = "cgSgspJ2msm6clMCkdW9";
+
+/**
+ * A voice that suits a tiny bulb: playful / bright / young if the account has one.
+ * Keys restricted to speech only can't list voices, so they get the premade fallback.
+ */
 async function defaultElevenVoice(t: Target): Promise<string | undefined> {
-  const voices = await listElevenVoices(t);
-  return (
-    voices.find((v) => /playful|quirky|bright|cheerful|youthful|bubbly/i.test(v.name)) ?? voices[0]
-  )?.id;
+  try {
+    const voices = await listElevenVoices(t);
+    return (
+      voices.find((v) => /playful|quirky|bright|cheerful|youthful|bubbly/i.test(v.name)) ??
+      voices[0]
+    )?.id;
+  } catch (err) {
+    console.warn("Can't list ElevenLabs voices, using the premade fallback", err);
+    elevenVoiceCache = { base: t.base, voices: [{ id: FALLBACK_ELEVEN_VOICE, name: "Jessica" }] };
+    return FALLBACK_ELEVEN_VOICE;
+  }
 }
 
 export function clearModelCache() {
@@ -251,7 +291,18 @@ export interface Feeling {
 type Msg = { role: "system" | "user" | "assistant"; content: string };
 
 const FEELING_FORMAT = `Respond with ONLY a JSON object, no markdown, no other text:
-{"happiness_delta": <integer -25..25>, "emotion": "<one of: ${EMOTIONS.join(", ")}>", "reason": "<a few words on why>"}`;
+{"happiness_delta": <integer -40..40>, "emotion": "<one of: ${EMOTIONS.join(", ")}>", "reason": "<a few words on why>"}`;
+
+const NAME_PREFIX = new RegExp(`^\\s*(?:${ALTERS.map((a) => a.name).join("|")})\\s*:\\s*`, "i");
+
+/** Only the words to say out loud: no [tags], (asides), *actions* or "Name:" prefixes. */
+const spokenOnly = (text: string) =>
+  text
+    .replace(/\[[^\]]*\]|\([^)]*\)|\*[^*]*\*/g, " ")
+    .replace(NAME_PREFIX, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+([,.!?])/g, "$1")
+    .replace(/^["'\s]+|["'\s]+$/g, "");
 
 const stripThink = (raw: string) =>
   raw
@@ -295,7 +346,7 @@ function parseFeeling(raw: string): Feeling {
       if (j.happiness_delta === undefined) continue;
       return {
         emotion: EMOTIONS.includes(j.emotion as Emotion) ? (j.emotion as Emotion) : "neutral",
-        delta: Math.max(-25, Math.min(25, Math.round(Number(j.happiness_delta) || 0))),
+        delta: Math.max(-40, Math.min(40, Math.round(Number(j.happiness_delta) || 0))),
         reason: String(j.reason ?? "").slice(0, 200),
       };
     } catch {
@@ -395,27 +446,37 @@ Latest: ${input}`;
     return parseFeeling(raw);
   }
 
-  /** Lumi's voice: says something out loud, coloured by the feeling the inner core picked. */
+  /**
+   * Lumi's voice: says something out loud as the alter in control, coloured by the
+   * feeling the inner core picked. Several of these can be in flight at once.
+   */
   async say(
     s: Settings,
     input: string,
     feeling: Feeling,
     happiness: number,
     lit: boolean,
+    alter: Alter,
+    switchedFrom: Alter | null,
   ): Promise<string> {
+    const switched = switchedFrom
+      ? `\nYou just took over the bulb from ${switchedFrom.name}, abruptly. Make it obvious a different identity is talking now.`
+      : "";
     const system = `${s.personality}
 
+Right now the identity in control is ${alter.name}. ${alter.persona}${switched}
 Right now you feel ${feeling.emotion} (happiness ${Math.round(happiness)}/100; your light is ${lit ? "ON" : "OFF"} — you only glow when you're happy enough).${feeling.reason ? ` Why: ${feeling.reason}.` : ""}
-Let this feeling clearly shape your words and tone. Reply with only the words you say out loud.`;
-    this.history.push({ role: "user", content: input });
+Let this feeling clearly shape your words and tone. Reply with only the words you say out loud: no name, no emotions, actions or sound effects in brackets, parentheses or asterisks.`;
+    const asked: Msg = { role: "user", content: input };
+    this.history.push(asked);
     const messages: Msg[] = [{ role: "system", content: system }, ...this.history.slice(-16)];
     try {
       const raw = await complete(s, messages, 1500, 0.9);
-      const text = stripThink(raw).replace(/^["'\s]+|["'\s]+$/g, "") || "...";
+      const text = spokenOnly(stripThink(raw)) || "...";
       this.history.push({ role: "assistant", content: text });
       return text;
     } catch (err) {
-      this.history.pop();
+      this.history.splice(this.history.indexOf(asked), 1);
       throw err;
     }
   }
@@ -547,7 +608,12 @@ const VOICE_ACTING: Record<
   love: { direction: "adoring, sweet and gushing", tag: "[lovingly]", stability: 0.35, style: 0.7 },
 };
 
-export async function synthesize(s: Settings, text: string, emotion: Emotion): Promise<Blob> {
+export async function synthesize(
+  s: Settings,
+  text: string,
+  emotion: Emotion,
+  alter?: Alter,
+): Promise<Blob> {
   const t = target(s, ttsProvider(s));
   const acting = VOICE_ACTING[emotion];
 
@@ -593,7 +659,7 @@ export async function synthesize(s: Settings, text: string, emotion: Emotion): P
         // Only the gpt-4o voices can be steered; tts-1 rejects instructions.
         ...(model.startsWith("gpt-")
           ? {
-              instructions: `You are Lumi, a tiny, adorable talking light bulb with a high, cute, playful voice. Right now you feel ${emotion}: speak ${acting.direction}.`,
+              instructions: `You are a tiny, adorable talking light bulb with a high, cute, playful voice.${alter ? ` ${alter.persona}` : ""} Right now you feel ${emotion}: speak ${acting.direction}.`,
             }
           : {}),
       }),

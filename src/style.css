@@ -1,5 +1,6 @@
 :root {
   --b: 0; /* brightness 0..1, driven by happiness */
+  --hue: 0deg; /* glow tint of whichever alter is in control */
   --bg-on-1: #fff7df;
   --bg-on-2: #ffd77a;
   --bg-off-1: #222738;
@@ -63,6 +64,7 @@ body {
     transparent 70%
   );
   opacity: var(--b);
+  filter: hue-rotate(var(--hue));
   pointer-events: none;
 }
 
@@ -88,8 +90,14 @@ body {
   height: 100%;
   overflow: visible;
   cursor: pointer;
-  filter: drop-shadow(0 0 calc(var(--b) * 50px) rgba(255, 200, 70, calc(var(--b) * 0.9)));
+  filter: drop-shadow(0 0 calc(var(--b) * 50px) rgba(255, 200, 70, calc(var(--b) * 0.9)))
+    hue-rotate(var(--hue));
   -webkit-tap-highlight-color: transparent;
+}
+
+/* Too happy: the flashing itself is driven by --b from main.ts; this adds a jitter. */
+body.manic .lumi-wrap {
+  animation: float 0.5s ease-in-out infinite;
 }
 
 .lumi-wrap[data-emotion="angry"] #lumi,
@@ -167,6 +175,19 @@ body {
 }
 
 /* Speech bubble */
+.bubble .who {
+  display: block;
+  font-size: 0.65em;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+
+.bubble .who:empty,
+.bubble.thinking .who {
+  display: none;
+}
+
 .bubble {
   position: absolute;
   top: max(12px, 3vh);

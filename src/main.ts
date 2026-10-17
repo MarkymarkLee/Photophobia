@@ -1,5 +1,5 @@
 import "./style.css";
-import { Brain, type Emotion } from "./brain.ts";
+import { ALTERS, Brain, type Alter, type BrainEvent, type Emotion } from "./brain.ts";
 import {
   Chat,
   DEFAULTS,
@@ -30,7 +30,7 @@ const GLASS =
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <div class="glow" aria-hidden="true"></div>
   <main class="stage">
-    <div class="bubble hidden" id="bubble" aria-live="polite"><span id="bubble-text"></span></div>
+    <div class="bubble hidden" id="bubble" aria-live="polite"><span class="who" id="bubble-who"></span><span id="bubble-text"></span></div>
     <div class="lumi-wrap" id="lumi-wrap">
       <svg id="lumi" viewBox="0 0 400 600" role="img" aria-label="Lumi, a light bulb with a face">
         <defs>
@@ -163,6 +163,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 const $ = <T extends Element>(sel: string) => document.querySelector<T>(sel)!;
 const bubble = $<HTMLDivElement>("#bubble");
 const bubbleText = $<HTMLSpanElement>("#bubble-text");
+const bubbleWho = $<HTMLSpanElement>("#bubble-who");
 const statusEl = $<HTMLDivElement>("#status");
 const micBtn = $<HTMLButtonElement>("#mic");
 const textInput = $<HTMLInputElement>("#text");
@@ -261,8 +262,15 @@ let reactionUntil = performance.now() + 4000;
 let lit = brain.happiness >= 40;
 let brightness = 0;
 let flickerUntil = 0;
-let busy = false; // thinking or transcribing
+let hue = 0;
+let wasManic = false;
+let flashUntil = 0;
+let nextFlashBurst = 0;
+let thinking = 0; // turns whose reply is still being written — several can overlap
 let speaking = false;
+// What Lumi is saying or just said, to pick its own voice back out of the mic.
+let recentLines: { words: string[]; until: number }[] = [];
+const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 let talkAmp = 0;
 let talkAnalyser: AnalyserNode | null = null;
 let hasInteracted = false;
@@ -274,8 +282,8 @@ let blinkStart = 0;
 let nextBlink = performance.now() + 2500;
 
 function currentEmotion(now: number): Emotion {
-  if (busy && !speaking) return "neutral";
   if (reaction && now < reactionUntil) return reaction;
+  if (thinking && !speaking) return "neutral";
   reaction = null;
   return brain.mood();
 }
@@ -294,7 +302,7 @@ function frame(now: number) {
   const ease = (k: number) => 1 - Math.pow(1 - k, dt);
   const emotion = currentEmotion(now);
   const target = EXPRESSIONS[emotion];
-  for (const k of Object.keys(cur) as (keyof Expr)[]) cur[k] += (target[k] - cur[k]) * ease(0.16);
+  for (const k of Object.keys(cur) as (keyof Expr)[]) cur[k] += (target[k] - cur[k]) * ease(0.3);
 
   if (emotion !== lastEmotion) {
     wrap.dataset.emotion = emotion;
@@ -367,17 +375,40 @@ function frame(now: number) {
   const nowLit = lit ? h >= 30 : h >= 40;
   if (nowLit !== lit) {
     lit = nowLit;
-    flickerUntil = now + 900;
+    flickerUntil = now + 300;
     document.body.classList.toggle("lit", lit);
   }
+  // Fast easing so every change in mood shows on the light right away.
   const targetB = lit ? 0.4 + 0.6 * Math.min(1, (h - 30) / 65) : 0;
-  brightness += (targetB - brightness) * ease(0.06);
+  brightness += (targetB - brightness) * ease(0.35);
   let shown = brightness;
   if (now < flickerUntil) shown = Math.random() < 0.45 ? (lit ? 0.1 : 0.7) : brightness;
+  // Too happy: a short burst of flashes when Lumi gets there, repeated every so often
+  // while it stays there. 2 soft flashes/s — well under the 3/s photosensitive seizure
+  // threshold — and a gentle pulse instead when the viewer asks for reduced motion.
+  const manic = lit && h >= 90;
+  if (manic && (!wasManic || now > nextFlashBurst)) {
+    flashUntil = now + 1500;
+    nextFlashBurst = now + 12_000;
+  }
+  wasManic = manic;
+  if (manic && now < flashUntil && now >= flickerUntil) {
+    shown = reducedMotion.matches
+      ? brightness * (0.85 + 0.15 * Math.sin(now / 300))
+      : Math.floor(now / 250) % 2
+        ? 1
+        : 0.55;
+  }
+  document.body.classList.toggle("manic", manic);
   document.documentElement.style.setProperty("--b", shown.toFixed(3));
 
+  // Each alter tints the glow its own colour.
+  hue += (brain.alter.hue - hue) * ease(0.25);
+  document.documentElement.style.setProperty("--hue", `${hue.toFixed(1)}deg`);
+  wrap.dataset.alter = brain.alter.id;
+
   if (!debugEl.hidden)
-    debugEl.textContent = `happiness ${h.toFixed(1)} · ${emotion} · ${lit ? "on" : "off"}`;
+    debugEl.textContent = `${brain.alter.name} · happiness ${h.toFixed(1)} · ${emotion} · ${lit ? "on" : "off"} · thinking ${thinking}`;
 
   requestAnimationFrame(frame);
 }
@@ -388,6 +419,14 @@ if (new URLSearchParams(location.search).has("debug")) {
   debugEl.hidden = false;
   (window as unknown as { lumi: unknown }).lumi = {
     brain,
+    switchAlter: (id?: string) => {
+      brain.switchAlter(ALTERS.find((a) => a.id === id));
+      void converse("[event: a different identity just took over the bulb]", brain.previousAlter);
+    },
+    swing: () => {
+      brain.swing();
+      void converse("[event: your mood just swung wildly, out of nowhere]");
+    },
     setReaction: (e: Emotion) => ((reaction = e), (reactionUntil = performance.now() + 60_000)),
   };
 }
@@ -486,14 +525,14 @@ function pickBrowserVoice(): SpeechSynthesisVoice | undefined {
   );
 }
 
-function speakBrowser(text: string, emotion: Emotion): Promise<void> {
+function speakBrowser(text: string, emotion: Emotion, alter: Alter): Promise<void> {
   return new Promise((resolve) => {
     if (!("speechSynthesis" in window)) return resolve();
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     const style = VOICE_STYLE[emotion];
-    u.pitch = Math.min(2, style.pitch);
-    u.rate = style.rate;
+    u.pitch = Math.min(2, style.pitch * alter.pitch);
+    u.rate = style.rate * alter.rate;
     const v = pickBrowserVoice();
     if (v) u.voice = v;
     // Chrome occasionally never fires onend; don't get stuck.
@@ -506,8 +545,8 @@ function speakBrowser(text: string, emotion: Emotion): Promise<void> {
   });
 }
 
-async function speakEndpoint(text: string, emotion: Emotion): Promise<void> {
-  const blob = await synthesize(settings, text, emotion);
+async function speakEndpoint(text: string, emotion: Emotion, alter: Alter): Promise<void> {
+  const blob = await synthesize(settings, text, emotion, alter);
   const audio = new Audio(URL.createObjectURL(blob));
   const ac = ctx();
   const src = ac.createMediaElementSource(audio);
@@ -523,26 +562,61 @@ async function speakEndpoint(text: string, emotion: Emotion): Promise<void> {
   URL.revokeObjectURL(audio.src);
 }
 
-async function speak(text: string, emotion: Emotion) {
+async function speak(text: string, emotion: Emotion, alter: Alter) {
   speaking = true;
+  const line = { words: words(text), until: Infinity };
+  recentLines.push(line);
   try {
-    if (settings.ttsMode !== "browser" && settings.ttsMode !== "off") {
+    // Browsers block audio until the first click, so don't pay for speech nobody hears.
+    if (!hasInteracted || settings.ttsMode === "off") {
+      await new Promise((r) => setTimeout(r, 600 + text.length * 45));
+    } else if (settings.ttsMode !== "browser") {
       try {
-        await speakEndpoint(text, emotion);
+        await speakEndpoint(text, emotion, alter);
       } catch (err) {
         console.warn(`${settings.ttsMode} voice failed, using browser voice`, err);
         setStatus(`Voice failed: ${(err as Error).message.slice(0, 100)}`, "error");
-        await speakBrowser(text, emotion);
+        await speakBrowser(text, emotion, alter);
       }
-    } else if (settings.ttsMode === "browser" && hasInteracted) {
-      await speakBrowser(text, emotion);
     } else {
-      await new Promise((r) => setTimeout(r, 600 + text.length * 45));
+      await speakBrowser(text, emotion, alter);
     }
   } finally {
     speaking = false;
+    line.until = performance.now() + 4000;
     talkAnalyser = null;
   }
+}
+
+const words = (t: string) => t.toLowerCase().match(/[a-z0-9']+/g) ?? [];
+
+/**
+ * The mic stays open while Lumi talks, so its own voice ends up in transcripts — either
+ * the whole thing or mixed in with your words. Cut out every run of 3+ words that
+ * matches something Lumi just said and keep only what's left.
+ */
+function stripEcho(heard: string): string {
+  const now = performance.now();
+  recentLines = recentLines.filter((l) => l.until > now);
+  if (!recentLines.length) return heard;
+  const tokens = heard.split(/\s+/).filter(Boolean);
+  const norm = tokens.map((t) => words(t).join(""));
+  const keep = tokens.map(() => true);
+  for (const { words: said } of recentLines) {
+    for (let i = 0; i < norm.length; i++) {
+      for (let j = 0; j < said.length; j++) {
+        let n = 0;
+        while (i + n < norm.length && j + n < said.length && norm[i + n] === said[j + n]) n++;
+        if (n >= 3) keep.fill(false, i, i + n);
+      }
+    }
+  }
+  const rest = tokens.filter((_, i) => keep[i]);
+  // What's left is mostly stray words from Lumi's lines: nothing of yours in there.
+  const said = new Set(recentLines.flatMap((l) => l.words));
+  const restWords = rest.flatMap(words);
+  if (restWords.filter((w) => said.has(w)).length >= restWords.length * 0.6) return "";
+  return rest.join(" ");
 }
 
 // ---------------------------------------------------------------------------
@@ -552,9 +626,12 @@ async function speak(text: string, emotion: Emotion) {
 interface Reply {
   text: string;
   emotion: Emotion;
+  alter: Alter;
+  turn: number;
 }
 
-function showBubble(text: string) {
+function showBubble(text: string, alter: Alter) {
+  bubbleWho.textContent = alter.name;
   bubbleText.textContent = text;
   bubble.classList.remove("pop", "thinking", "hidden");
   void bubble.offsetWidth; // restart animation
@@ -564,47 +641,124 @@ function showBubble(text: string) {
 async function react(reply: Reply) {
   reaction = reply.emotion;
   reactionUntil = performance.now() + 3500 + reply.text.length * 70;
-  showBubble(reply.text);
+  showBubble(reply.text, reply.alter);
   burst(reply.emotion);
-  await speak(reply.text, reply.emotion);
+  await speak(reply.text, reply.emotion, reply.alter);
   reactionUntil = Math.max(reactionUntil, performance.now() + 1800);
 }
+
+// Replies wait for Lumi to finish its current sentence. Only the newest one is kept:
+// if you said three things while Lumi was talking, it answers the latest.
+let nextReply: Reply | null = null;
+let lastSpokenTurn = 0;
+let playing = false;
+
+async function enqueue(reply: Reply) {
+  if (reply.turn < lastSpokenTurn || (nextReply && reply.turn < nextReply.turn)) return;
+  nextReply = reply;
+  if (playing) return;
+  playing = true;
+  while (nextReply) {
+    const r = nextReply;
+    nextReply = null;
+    lastSpokenTurn = r.turn;
+    await react(r);
+  }
+  playing = false;
+}
+
+// Instant gut reaction from a few obvious words, so the light moves the moment you
+// speak. The inner-feelings model refines it when it answers.
+const WARM =
+  /\b(love|cute|adorable|great|awesome|amazing|beautiful|best|good|nice|thanks?|sweet|yay|haha|lol|wonderful|pretty|smart|funny|friend|sorry|cool)\b/g;
+const COLD =
+  /\b(hate|stupid|dumb|ugly|shut up|annoying|boring|idiot|bad|worst|go away|turn off|useless|sucks?|lame|gross)\b/g;
+
+function gutFeeling(text: string): { delta: number; emotion: Emotion } | null {
+  if (text.startsWith("[event")) return null;
+  const t = text.toLowerCase();
+  const warm = t.match(WARM)?.length ?? 0;
+  const cold = t.match(COLD)?.length ?? 0;
+  const delta = Math.max(-18, Math.min(18, warm * 7 - cold * 9));
+  if (!delta) return null;
+  const emotion: Emotion =
+    delta > 0
+      ? /\blove\b/.test(t)
+        ? "love"
+        : "happy"
+      : /\b(hate|stupid|idiot|shut up)\b/.test(t)
+        ? "angry"
+        : "sad";
+  return { delta, emotion };
+}
+
+let turnCounter = 0;
 
 /**
  * One turn: the inner-feelings model decides the happiness change and emotion,
  * the brain applies it (which may switch the light), then the voice model speaks.
+ * Turns don't wait for each other — you can keep talking while Lumi thinks or speaks.
  */
-async function converse(input: string) {
-  if (busy) return;
+async function converse(input: string, switchedFrom: Alter | null = null) {
   if (!chatReady(settings)) {
     setStatus("Lumi needs a brain — open settings and pick a chat provider", "error");
     return;
   }
-  busy = true;
-  bubble.classList.remove("hidden");
-  bubble.classList.add("thinking");
-  bubbleText.textContent = "";
+  const turn = ++turnCounter;
+  thinking++;
+  if (!speaking) {
+    bubble.classList.remove("hidden");
+    bubble.classList.add("thinking");
+    bubbleText.textContent = "";
+  }
+  const gut = gutFeeling(input);
+  if (gut) {
+    brain.apply(gut.delta);
+    reaction = gut.emotion;
+    reactionUntil = performance.now() + 30_000;
+  }
   try {
     const feeling = await chat.feel(settings, input, brain.happiness, lit);
-    brain.apply(feeling.delta);
+    brain.apply(feeling.delta - (gut?.delta ?? 0));
+    // Big feelings can tip Lumi into a mood swing or bring out another alter.
+    if (!switchedFrom && brain.afterFeeling(feeling.delta) === "switch")
+      switchedFrom = brain.previousAlter;
     // Show the new feeling on the face while the reply is being written.
     reaction = feeling.emotion;
     reactionUntil = performance.now() + 30_000;
-    const text = await chat.say(settings, input, feeling, brain.happiness, lit);
-    busy = false;
-    await react({ text, emotion: feeling.emotion });
+    const alter = brain.alter;
+    const text = await chat.say(
+      settings,
+      input,
+      feeling,
+      brain.happiness,
+      lit,
+      alter,
+      switchedFrom,
+    );
+    thinking--;
+    void enqueue({ text, emotion: feeling.emotion, alter, turn });
   } catch (err) {
-    busy = false;
+    thinking--;
     console.warn("LLM failed", err);
-    bubble.classList.remove("thinking");
-    bubble.classList.add("hidden");
+    if (!thinking && !speaking) {
+      bubble.classList.remove("thinking");
+      bubble.classList.add("hidden");
+    }
     setStatus(`Can't reach Lumi's brain: ${(err as Error).message.slice(0, 120)}`, "error");
   }
 }
 
+/** Something the mic picked up, with any of Lumi's own voice taken out. */
+function handleHeard(text: string) {
+  const mine = stripEcho(text.trim());
+  if (mine !== text.trim()) console.info(`Ignored Lumi's own voice in “${text}” → “${mine}”`);
+  return handleInput(mine);
+}
+
 function handleInput(text: string) {
   text = text.trim();
-  if (!text || busy) return Promise.resolve();
+  if (!text) return Promise.resolve();
   hasInteracted = true;
   setStatus(`You: “${text}”`);
   return converse(text);
@@ -619,7 +773,6 @@ $<HTMLFormElement>("#chat").addEventListener("submit", (e) => {
 });
 
 svg.addEventListener("click", () => {
-  if (busy || speaking) return;
   hasInteracted = true;
   ctx();
   void converse(
@@ -629,11 +782,17 @@ svg.addEventListener("click", () => {
   );
 });
 
+const TICK_EVENTS: Record<BrainEvent, string> = {
+  idle: "[event: the user has gone quiet for a while and isn't talking to you]",
+  swing: "[event: your mood just swung wildly, out of nowhere]",
+  switch: "[event: a different identity just took over the bulb]",
+};
+
 setInterval(() => {
-  if (busy || speaking) return;
-  if (brain.tick() === "idle" && hasInteracted) {
-    void converse("[event: the user has gone quiet for a while and isn't talking to you]");
-  }
+  if (thinking || speaking) return;
+  const event = brain.tick();
+  if (event && hasInteracted)
+    void converse(TICK_EVENTS[event], event === "switch" ? brain.previousAlter : null);
 }, 3000);
 
 // Greet whoever opens the page (shown in the bubble; voice needs a click first).
@@ -673,22 +832,16 @@ async function startEndpointListening(): Promise<() => void> {
     const rms = Math.sqrt(sum / input.length);
     micBtn.style.setProperty("--lvl", Math.min(1, rms * 12).toFixed(2));
 
-    // Don't listen to ourselves, or while still processing the last utterance.
-    if (busy || speaking) {
-      recording = false;
-      chunks = [];
-      voiced = 0;
-      return;
-    }
-
+    // Keep listening while Lumi talks or thinks, so you can talk over it. While it's
+    // speaking, its own voice leaks into the mic, so it takes a louder voice to count.
     const copy = new Float32Array(input);
-    const threshold = Math.max(0.012, noise * 3);
+    const threshold = Math.max(0.012, noise * 3) * (speaking ? 2.5 : 1);
     if (!recording) {
-      noise = noise * 0.97 + rms * 0.03;
+      if (!speaking) noise = noise * 0.97 + rms * 0.03;
       preroll.push(copy);
       if (preroll.length > 6) preroll.shift();
       voiced = rms > threshold ? voiced + 1 : 0;
-      if (voiced >= 2) {
+      if (voiced >= (speaking ? 3 : 2)) {
         recording = true;
         silentMs = 0;
         chunks = [...preroll];
@@ -725,19 +878,14 @@ async function startEndpointListening(): Promise<() => void> {
 }
 
 async function finishUtterance(wav: Blob) {
-  busy = true;
   setStatus("Hmm, let me hear that…", "live");
   try {
     const text = await transcribe(settings, wav);
-    busy = false;
-    if (text && /[a-z0-9]/i.test(text)) await handleInput(text);
+    if (text && /[a-z0-9]/i.test(text)) void handleHeard(text);
     else setStatus("Didn't catch that — try again", "live");
   } catch (err) {
-    busy = false;
     setStatus(`Transcription failed: ${(err as Error).message}`, "error");
   }
-  if (listening)
-    setTimeout(() => listening && !busy && setStatus("Listening — just talk to Lumi", "live"), 400);
 }
 
 // Minimal typing for the Web Speech API (not in every lib.dom version).
@@ -770,13 +918,13 @@ function startBrowserListening(): () => void {
     );
   const rec = new Ctor();
   rec.lang = "en-US";
-  rec.continuous = false;
+  rec.continuous = true;
   rec.interimResults = true;
   let active = true;
   let running = false;
 
   const begin = () => {
-    if (!active || running || busy || speaking) return;
+    if (!active || running) return;
     try {
       rec.start();
       running = true;
@@ -789,7 +937,7 @@ function startBrowserListening(): () => void {
     let interim = "";
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const r = e.results[i];
-      if (r.isFinal) void handleInput(r[0].transcript);
+      if (r.isFinal) void handleHeard(r[0].transcript);
       else interim += r[0].transcript;
     }
     if (interim) setStatus(`…${interim}`, "live");
@@ -805,7 +953,7 @@ function startBrowserListening(): () => void {
       setStatus("Microphone permission denied", "error");
     }
   };
-  // Restart recognition whenever Lumi is idle (it stops after each phrase).
+  // Restart recognition whenever it stops — it keeps running while Lumi talks.
   const timer = setInterval(begin, 300);
   begin();
   return () => {

@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 440" width="1200" height="440" role="img" aria-label="Lumi, a light bulb with a happy face, glowing next to the words: Lumi, a tiny light bulb with very big feelings">
+  <defs>
+    <radialGradient id="bg" cx="24%" cy="45%" r="85%">
+      <stop offset="0%" stop-color="#3a2f22"/>
+      <stop offset="45%" stop-color="#1a1d2a"/>
+      <stop offset="100%" stop-color="#0c0e15"/>
+    </radialGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffe278" stop-opacity="0.9"/>
+      <stop offset="45%" stop-color="#ffbe3c" stop-opacity="0.28"/>
+      <stop offset="100%" stop-color="#ffbe3c" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glass" cx="45%" cy="35%" r="70%">
+      <stop offset="0%" stop-color="#fffef6"/>
+      <stop offset="55%" stop-color="#ffe58a"/>
+      <stop offset="100%" stop-color="#ffc23d"/>
+    </radialGradient>
+    <linearGradient id="metal" x1="0" x2="1">
+      <stop offset="0%" stop-color="#8d93a0"/>
+      <stop offset="45%" stop-color="#e3e6ec"/>
+      <stop offset="100%" stop-color="#7c818d"/>
+    </linearGradient>
+    <clipPath id="card">
+      <rect width="1200" height="440" rx="28"/>
+    </clipPath>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3"/>
+    </filter>
+    <style>
+      .pulse { animation: pulse 3.2s ease-in-out infinite; transform-origin: 280px 200px; }
+      .float { animation: float 4s ease-in-out infinite; }
+      @keyframes pulse { 0%, 100% { opacity: 0.85; transform: scale(1); } 50% { opacity: 1; transform: scale(1.06); } }
+      @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+      @media (prefers-reduced-motion: reduce) { .pulse, .float { animation: none; } }
+      text { font-family: "Nunito", ui-rounded, "SF Pro Rounded", system-ui, -apple-system, "Segoe UI", sans-serif; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="440" rx="28" fill="url(#bg)"/>
+  <g clip-path="url(#card)">
+    <circle class="pulse" cx="280" cy="200" r="250" fill="url(#glow)"/>
+  </g>
+
+  <!-- Lumi, drawn with the same outline and face as the app -->
+  <g class="float">
+    <g transform="translate(144 24) scale(0.68)">
+      <path d="M 145 450 C 145 395 40 345 40 235 A 160 160 0 1 1 360 235 C 360 345 255 395 255 450 Z" fill="url(#glass)" stroke="#f2b33a" stroke-width="5"/>
+      <path d="M 92 200 Q 98 128 160 98" fill="none" stroke="#fff" stroke-width="14" stroke-linecap="round" opacity="0.7"/>
+      <rect x="138" y="446" width="124" height="24" rx="9" fill="url(#metal)"/>
+      <rect x="146" y="472" width="108" height="16" rx="8" fill="url(#metal)"/>
+      <rect x="148" y="491" width="104" height="16" rx="8" fill="url(#metal)"/>
+      <rect x="152" y="510" width="96" height="16" rx="8" fill="url(#metal)"/>
+      <path d="M 170 529 L 230 529 L 215 552 Q 200 562 185 552 Z" fill="#4a4f5c"/>
+      <ellipse cx="108" cy="268" rx="24" ry="13" fill="#ff7d8f" opacity="0.75" filter="url(#soft)"/>
+      <ellipse cx="292" cy="268" rx="24" ry="13" fill="#ff7d8f" opacity="0.75" filter="url(#soft)"/>
+      <g fill="#5a3410" stroke="#5a3410" stroke-width="5" stroke-linejoin="round">
+        <path d="M 132 225 C 132 201 168 201 168 225 C 168 213 132 213 132 225 Z"/>
+        <path d="M 232 225 C 232 201 268 201 268 225 C 268 213 232 213 232 225 Z"/>
+        <path d="M 162 298 C 162 306 238 306 238 298 C 238 340 162 340 162 298 Z"/>
+      </g>
+    </g>
+  </g>
+
+  <!-- sparkles -->
+  <g fill="#ffe278">
+    <text x="470" y="110" font-size="30" opacity="0.9">✦</text>
+    <text x="96" y="140" font-size="22" opacity="0.7">✧</text>
+    <text x="440" y="330" font-size="20" opacity="0.6">✧</text>
+  </g>
+
+  <text x="560" y="190" font-size="118" font-weight="900" fill="#fff4d6" letter-spacing="-2">Lumi</text>
+  <text x="566" y="242" font-size="30" font-weight="700" fill="#c3cad9">a tiny light bulb with very big feelings</text>
+
+  <!-- the five alters and their glow colours -->
+  <g font-size="19" font-weight="800">
+    <circle cx="578" cy="312" r="11" fill="#ffc23d"/>
+    <text x="598" y="319" fill="#e6e9f0">Lumi</text>
+    <circle cx="676" cy="312" r="11" fill="#ff8a3d"/>
+    <text x="696" y="319" fill="#e6e9f0">Flare</text>
+    <circle cx="780" cy="312" r="11" fill="#5aa8ff"/>
+    <text x="800" y="319" fill="#e6e9f0">Dim</text>
+    <circle cx="870" cy="312" r="11" fill="#d46bff"/>
+    <text x="890" y="319" fill="#e6e9f0">Sir Watt</text>
+    <circle cx="1002" cy="312" r="11" fill="#6fe08a"/>
+    <text x="1022" y="319" fill="#e6e9f0">Bitty</text>
+  </g>
+  <text x="566" y="372" font-size="18" font-weight="600" fill="#9aa3b8">Talk to it. Its light is its mood.</text>
+</svg>
